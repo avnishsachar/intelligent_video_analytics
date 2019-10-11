@@ -1,0 +1,4 @@
+Name,URL,Line1,Line2,Region,Case,Slope,LiveStream,Threshold
+RingRoad9,D:\FACE_DETECT_RECOG\Webel_aug\lineCross_sound\webelLineCross\toConfigure\RingRoad9.ts,"((63, 333), (213, 278))","((33, 303), (183, 248))","[[16, 195], [193, 153], [228, 330], [49, 412], [16, 331]]",4,-0.366666667,yes,800
+RingRoad8,D:\FACE_DETECT_RECOG\Webel_aug\lineCross_sound\webelLineCross\toConfigure\RingRoad8.ts,"((49, 279), (197, 175))","((19, 249), (167, 145))","[[4, 139], [158, 69], [213, 251], [25, 351], [7, 245]]",4,-0.702702703,yes,600
+RingRoad3,D:\FACE_DETECT_RECOG\Webel_aug\lineCross_sound\webelLineCross\toConfigure\RingRoad3.ts,"((57, 300), (269, 224))","((27, 270), (239, 194))","[[8, 134], [243, 79], [311, 277], [45, 394], [8, 276]]",4,-0.358490566,yes,600
