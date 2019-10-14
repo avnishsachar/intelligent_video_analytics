@@ -273,7 +273,7 @@ bus_sync_handler (GstBus * bus, GstMessage * msg, gpointer data)
  * property "gie-kitti-output-dir" must be set in configuration file.
  * Data of different sources and frames is dumped in separate file.
  */
-static void
+static gint
 write_kitti_output (AppCtx * appCtx, NvDsBatchMeta * batch_meta)
 {
   gchar bbox_file[1024] = { 0 };
@@ -293,7 +293,7 @@ write_kitti_output (AppCtx * appCtx, NvDsBatchMeta * batch_meta)
   int minutes = local->tm_min;     	// get minutes passed after the hour (0-59)
   int seconds = local->tm_sec;     	// get seconds passed after minute (0-59)
   if (!appCtx->config.bbox_dir_path)
-    return;
+    return 0;
 
   for (NvDsMetaList * l_frame = batch_meta->frame_meta_list; l_frame != NULL;
       l_frame = l_frame->next) {
@@ -312,11 +312,13 @@ write_kitti_output (AppCtx * appCtx, NvDsBatchMeta * batch_meta)
       int top = obj->rect_params.top;
       int right = left + obj->rect_params.width;
       int bottom = top + obj->rect_params.height;
-      fprintf (bbox_params_dump_file,
-          "%s %02d:%02d:%02d %d.00 %d.00 %d.00 %d.00\n",
-          obj->obj_label,hours, minutes, seconds, left, top, right, bottom);
+      //fprintf (bbox_params_dump_file,
+      //   "%s %02d:%02d:%02d %d.00 %d.00 %d.00 %d.00\n",
+      //    obj->obj_label,hours, minutes, seconds, left, top, right, bottom);
+      return left, right;
     }
     fclose (bbox_params_dump_file);
+    //return obj->obj_label,hours, minutes, seconds, left, top, right, bottom
   }
 }
 
@@ -547,9 +549,9 @@ gie_primary_processing_done_buf_prob (GstPad * pad, GstPadProbeInfo * info,
     NVGSTDS_WARN_MSG_V ("Batch meta not found for buffer %p", buf);
     return GST_PAD_PROBE_OK;
   }
-
-  write_kitti_output (appCtx, batch_meta);
-
+  int left, right, zero;
+  left, right = write_kitti_output (appCtx, batch_meta);
+  g_print("left: %d right: %d\n", left, right);
   return GST_PAD_PROBE_OK;
 }
 
