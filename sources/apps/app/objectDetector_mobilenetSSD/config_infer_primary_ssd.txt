@@ -74,9 +74,9 @@ num-detected-classes=2
 interval=0
 gie-unique-id=1
 is-classifier=0
-output-blob-names=MarkOutput_0
+#output-blob-names=MarkOutput_0
 parse-bbox-func-name=NvDsInferParseCustomSSD
-custom-lib-path=nvdsinfer_custom_impl_ssd/libnvdsinfer_custom_impl_ssd.so
+custom-lib-path=../../../libs/nvdsinfer_custom_impl_ssd/libnvdsinfer_custom_impl_ssd.so
 
 [class-attrs-all]
 threshold=0.6
