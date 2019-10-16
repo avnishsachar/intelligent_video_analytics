@@ -57,17 +57,21 @@
  * based on the fastest source's framerate. */
 #define MUXER_BATCH_TIMEOUT_USEC 4000000
 
+/* NVIDIA Decoder source pad memory feature. This feature signifies that source
+ * pads having this capability will push GstBuffers containing cuda buffers. */
+#define GST_CAPS_FEATURES_NVMM "memory:NVMM"
 gint frame_number = 0;
 const gchar pgie_classes_str[PGIE_DETECTED_CLASS_NUM][32] =
     { "unlabeled", "person" };
 
+// #define FPS_PRINT_INTERVAL 300
 
 /* This is the buffer probe function that we have registered on the sink pad
  * of the OSD element. All the infer elements in the pipeline shall attach
  * their metadata to the GstBuffer, here we will iterate & process the metadata
  * forex: class ids to strings, counting of class_id objects etc. */
 static GstPadProbeReturn
-osd_sink_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info,
+tiler_src_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info,
     gpointer u_data)
 {
   GstBuffer *buf = (GstBuffer *) info->data;
@@ -122,9 +126,9 @@ osd_sink_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info,
   }
 
 
-  g_print ("Frame Number = %d Number of objects = %d "
-      "Person Count = %d\n",
-      frame_number, num_rects, person_count);
+  // g_print ("Frame Number = %d"
+  //     "Person Count = %d\n",
+  //     frame_number, person_count);
   frame_number++;
   return GST_PAD_PROBE_OK;
 }
@@ -278,10 +282,112 @@ bus_call (GstBus * bus, GstMessage * msg, gpointer data)
       g_main_loop_quit (loop);
       break;
     }
+    case GST_MESSAGE_WARNING:
+    {
+      gchar *debug;
+      GError *error;
+      gst_message_parse_warning (msg, &error, &debug);
+      g_printerr ("WARNING from element %s: %s\n",
+          GST_OBJECT_NAME (msg->src), error->message);
+      g_free (debug);
+      g_printerr ("Warning: %s\n", error->message);
+      g_error_free (error);
+      break;
+    }
     default:
       break;
   }
   return TRUE;
+}
+static void
+cb_newpad (GstElement * decodebin, GstPad * decoder_src_pad, gpointer data)
+{
+  g_print ("In cb_newpad\n");
+  GstCaps *caps = gst_pad_get_current_caps (decoder_src_pad);
+  const GstStructure *str = gst_caps_get_structure (caps, 0);
+  const gchar *name = gst_structure_get_name (str);
+  GstElement *source_bin = (GstElement *) data;
+  GstCapsFeatures *features = gst_caps_get_features (caps, 0);
+
+  /* Need to check if the pad created by the decodebin is for video and not
+   * audio. */
+  if (!strncmp (name, "video", 5)) {
+    /* Link the decodebin pad only if decodebin has picked nvidia
+     * decoder plugin nvdec_*. We do this by checking if the pad caps contain
+     * NVMM memory features. */
+    if (gst_caps_features_contains (features, GST_CAPS_FEATURES_NVMM)) {
+      /* Get the source bin ghost pad */
+      GstPad *bin_ghost_pad = gst_element_get_static_pad (source_bin, "src");
+      if (!gst_ghost_pad_set_target (GST_GHOST_PAD (bin_ghost_pad),
+              decoder_src_pad)) {
+        g_printerr ("Failed to link decoder src pad to source bin ghost pad\n");
+      }
+      gst_object_unref (bin_ghost_pad);
+    } else {
+      g_printerr ("Error: Decodebin did not pick nvidia decoder plugin.\n");
+    }
+  }
+}
+static void
+decodebin_child_added (GstChildProxy * child_proxy, GObject * object,
+    gchar * name, gpointer user_data)
+{
+  g_print ("Decodebin child added: %s\n", name);
+  if (g_strrstr (name, "decodebin") == name) {
+    g_signal_connect (G_OBJECT (object), "child-added",
+        G_CALLBACK (decodebin_child_added), user_data);
+  }
+  if (g_strstr_len (name, -1, "nvv4l2decoder") == name) {
+    g_print ("Seting bufapi_version\n");
+    g_object_set (object, "bufapi-version", TRUE, NULL);
+  }
+}
+
+static GstElement *
+create_source_bin (guint index, gchar * uri)
+{
+  GstElement *bin = NULL, *uri_decode_bin = NULL;
+  gchar bin_name[16] = { };
+
+  g_snprintf (bin_name, 15, "source-bin-%02d", index);
+  /* Create a source GstBin to abstract this bin's content from the rest of the
+   * pipeline */
+  bin = gst_bin_new (bin_name);
+
+  /* Source element for reading from the uri.
+   * We will use decodebin and let it figure out the container format of the
+   * stream and the codec and plug the appropriate demux and decode plugins. */
+  uri_decode_bin = gst_element_factory_make ("uridecodebin", "uri-decode-bin");
+
+  if (!bin || !uri_decode_bin) {
+    g_printerr ("One element in source bin could not be created.\n");
+    return NULL;
+  }
+
+  /* We set the input uri to the source element */
+  g_object_set (G_OBJECT (uri_decode_bin), "uri", uri, NULL);
+
+  /* Connect to the "pad-added" signal of the decodebin which generates a
+   * callback once a new pad for raw data has beed created by the decodebin */
+  g_signal_connect (G_OBJECT (uri_decode_bin), "pad-added",
+      G_CALLBACK (cb_newpad), bin);
+  g_signal_connect (G_OBJECT (uri_decode_bin), "child-added",
+      G_CALLBACK (decodebin_child_added), bin);
+
+  gst_bin_add (GST_BIN (bin), uri_decode_bin);
+
+  /* We need to create a ghost pad for the source bin which will act as a proxy
+   * for the video decoder src pad. The ghost pad will not have a target right
+   * now. Once the decode bin creates the video decoder and generates the
+   * cb_newpad callback, we will set the ghost pad target to the video decoder
+   * src pad. */
+  if (!gst_element_add_pad (bin, gst_ghost_pad_new_no_target ("src",
+              GST_PAD_SRC))) {
+    g_printerr ("Failed to add ghost pad in source bin\n");
+    return NULL;
+  }
+
+  return bin;
 }
 
 int
@@ -296,14 +402,13 @@ main (int argc, char *argv[])
 #endif
   GstBus *bus = NULL;
   guint bus_watch_id = 0;
-  GstPad *osd_sink_pad = NULL, *tiler_sink_pad = NULL;
+  GstPad *osd_sink_pad = NULL, *tiler_src_pad = NULL;
   guint i;
+  guint pgie_batch_size;
 
   /* Check input arguments */
   if (argc < 2) {
-    g_printerr
-        ("Usage: %s <elementary H264 file 1> ... <elementary H264 file n>\n",
-        argv[0]);
+    g_printerr ("Usage: %s <uri1> [uri2] ... [uriN] \n", argv[0]);
     return -1;
   }
 
@@ -324,13 +429,48 @@ main (int argc, char *argv[])
     g_printerr ("One element could not be created. Exiting.\n");
     return -1;
   }
+  gst_bin_add (GST_BIN (pipeline), streammux);
+
+  for (i = 0; i < num_sources; i++) {
+    GstPad *sinkpad, *srcpad;
+    gchar pad_name[16] = { };
+    GstElement *source_bin = create_source_bin (i, argv[i + 1]);
+
+    if (!source_bin) {
+      g_printerr ("Failed to create source bin. Exiting.\n");
+      return -1;
+    }
+
+    gst_bin_add (GST_BIN (pipeline), source_bin);
+
+    g_snprintf (pad_name, 15, "sink_%u", i);
+    sinkpad = gst_element_get_request_pad (streammux, pad_name);
+    if (!sinkpad) {
+      g_printerr ("Streammux request sink pad failed. Exiting.\n");
+      return -1;
+    }
+
+    srcpad = gst_element_get_static_pad (source_bin, "src");
+    if (!srcpad) {
+      g_printerr ("Failed to get src pad of source bin. Exiting.\n");
+      return -1;
+    }
+
+    if (gst_pad_link (srcpad, sinkpad) != GST_PAD_LINK_OK) {
+      g_printerr ("Failed to link source bin to stream muxer. Exiting.\n");
+      return -1;
+    }
+
+    gst_object_unref (srcpad);
+    gst_object_unref (sinkpad);
+  }
 
   /* Use nvinfer to run inferencing on decoder's output,
    * behaviour of inferencing is set through config file */
   pgie = gst_element_factory_make ("nvinfer", "primary-nvinference-engine");
 
   /* Use convertor to convert from NV12 to RGBA as required by nvosd */
-  tiler = gst_element_factory_make ("nvmultistreamtiler", "tiler");
+  tiler = gst_element_factory_make ("nvmultistreamtiler", "nvtiler");
 
   /* Use convertor to convert from NV12 to RGBA as required by nvosd */
   nvvidconv = gst_element_factory_make ("nvvideoconvert", "nvvideo-converter");
@@ -340,9 +480,9 @@ main (int argc, char *argv[])
 
   /* Finally render the osd output */
 #ifdef PLATFORM_TEGRA
-  transform = gst_element_factory_make ("nvegltransform", "nvegl-transform");
+  transform = gst_element_factory_make ("queue", "queue");
 #endif
-  sink = gst_element_factory_make ("nveglglessink", "nvvideo-renderer");
+  sink = gst_element_factory_make ("nvoverlaysink", "nvvideo-renderer");
 
   if (!pgie || !nvvidconv || !nvosd || !sink ||
       !tiler) {
@@ -356,7 +496,6 @@ main (int argc, char *argv[])
   }
 #endif
 
-
   g_object_set (G_OBJECT (streammux), "width", MUXER_OUTPUT_WIDTH, "height",
       MUXER_OUTPUT_HEIGHT, "batch-size", num_sources,
       "batched-push-timeout", MUXER_BATCH_TIMEOUT_USEC, NULL);
@@ -366,13 +505,23 @@ main (int argc, char *argv[])
    * or enable this attribute in config file. with that we can probe PGIE and
    * SGIEs buffer to parse tensor output data of models */
   g_object_set (G_OBJECT (pgie), "config-file-path", PGIE_CONFIG_FILE,
-      "output-tensor-meta", TRUE, "batch-size", num_sources, NULL);
+      "output-tensor-meta", TRUE, NULL);
+  /* Override the batch-size set in the config file with the number of sources. */
+
+  g_object_get (G_OBJECT (pgie), "batch-size", &pgie_batch_size, NULL);
+  if (pgie_batch_size != num_sources) {
+    g_printerr
+        ("WARNING: Overriding infer-config batch-size (%d) with number of sources (%d)\n",
+        pgie_batch_size, num_sources);
+    g_object_set (G_OBJECT (pgie), "batch-size", num_sources, NULL);
+  }
 
   guint rows = sqrt (num_sources);
   g_object_set (G_OBJECT (tiler), "rows", rows, "columns",
       (guint) ceil (1.0 * num_sources / rows), "width", 1920, "height", 1080,
       NULL);
-
+      
+  g_object_set (G_OBJECT(sink), "sync", FALSE, NULL);
   /* we add a message handler */
   bus = gst_pipeline_get_bus (GST_PIPELINE (pipeline));
   bus_watch_id = gst_bus_add_watch (bus, bus_call, loop);
@@ -382,94 +531,47 @@ main (int argc, char *argv[])
   /* we add all elements into the pipeline */
   /* decoder | pgie1 | sgie1 | sgie2 | sgie3 | etc.. */
 #ifdef PLATFORM_TEGRA
-  gst_bin_add (GST_BIN (pipeline), transform);
-#endif
-  gst_bin_add_many (GST_BIN (pipeline),
-      streammux, pgie, tiler, nvvidconv, nvosd, sink, NULL);
-
-  for (i = 0; i < num_sources; i++) {
-    /* Source element for reading from the file */
-    source = gst_element_factory_make ("filesrc", NULL);
-
-    /* Since the data format in the input file is elementary h264 stream,
-     * we need a h264parser */
-    h264parser = gst_element_factory_make ("h264parse", NULL);
-
-    /* Use nvdec_h264 for hardware accelerated decode on GPU */
-    decoder = gst_element_factory_make ("nvv4l2decoder", NULL);
-    gst_bin_add_many (GST_BIN (pipeline), source, h264parser, decoder, NULL);
-
-    if (!source || !h264parser || !decoder) {
-      g_printerr ("One element could not be created. Exiting.\n");
-      return -1;
-    }
-
-    GstPad *sinkpad, *srcpad;
-    gchar pad_name_sink[16];
-    sprintf (pad_name_sink, "sink_%d", i);
-    gchar pad_name_src[16] = "src";
-
-    sinkpad = gst_element_get_request_pad (streammux, pad_name_sink);
-    if (!sinkpad) {
-      g_printerr ("Streammux request sink pad failed. Exiting.\n");
-      return -1;
-    }
-
-    srcpad = gst_element_get_static_pad (decoder, pad_name_src);
-    if (!srcpad) {
-      g_printerr ("Decoder request src pad failed. Exiting.\n");
-      return -1;
-    }
-
-    if (gst_pad_link (srcpad, sinkpad) != GST_PAD_LINK_OK) {
-      g_printerr ("Failed to link decoder to stream muxer. Exiting.\n");
-      return -1;
-    }
-
-    gst_object_unref (sinkpad);
-    gst_object_unref (srcpad);
-
-    /* Link the elements together */
-    if (!gst_element_link_many (source, h264parser, decoder, NULL)) {
-      g_printerr ("Elements could not be linked: 1. Exiting.\n");
-      return -1;
-    }
-    /* Set the input filename to the source element */
-    g_object_set (G_OBJECT (source), "location", argv[i + 1], NULL);
-  }
-
-  if (!gst_element_link_many (streammux, pgie, tiler, nvvidconv, nvosd,
-#ifdef PLATFORM_TEGRA
-          transform,
-#endif
-          sink, NULL)) {
-    g_printerr ("Elements could not be linked: 2. Exiting.\n");
+  gst_bin_add_many (GST_BIN (pipeline), pgie, tiler, nvvidconv, nvosd, transform, sink,
+      NULL);
+  /* we link the elements together
+   * nvstreammux -> nvinfer -> nvtiler -> nvvidconv -> nvosd -> video-renderer */
+  if (!gst_element_link_many (streammux, pgie, tiler, nvvidconv, nvosd, transform, sink,
+          NULL)) {
+    g_printerr ("Elements could not be linked. Exiting.\n");
     return -1;
   }
+#else
+gst_bin_add_many (GST_BIN (pipeline), pgie, tiler, nvvidconv, nvosd, sink,
+      NULL);
+  /* we link the elements together
+   * nvstreammux -> nvinfer -> nvtiler -> nvvidconv -> nvosd -> video-renderer */
+  if (!gst_element_link_many (streammux, pgie, tiler, nvvidconv, nvosd, sink,
+          NULL)) {
+    g_printerr ("Elements could not be linked. Exiting.\n");
+    return -1;
+  }
+#endif
 
-  /* Add probe to get informed of the meta data generated, we add probe to
+
+  /* Lets add probe to get informed of the meta data generated, we add probe to
    * the sink pad of the osd element, since by that time, the buffer would have
    * had got all the metadata. */
-  osd_sink_pad = gst_element_get_static_pad (nvosd, "sink");
-  if (!osd_sink_pad)
-    g_print ("Unable to get sink pad\n");
+  tiler_src_pad = gst_element_get_static_pad (pgie, "src");
+  if (!tiler_src_pad)
+    g_print ("Unable to get src pad\n");
   else
-    gst_pad_add_probe (osd_sink_pad, GST_PAD_PROBE_TYPE_BUFFER,
-        osd_sink_pad_buffer_probe, NULL, NULL);
-
-  /* Add probe to get informed of the meta data generated, we add probe to
-   * the sink pad of tiler element which is just after all SGIE elements.
-   * Since by that time, GstBuffer would have had got all SGIEs tensor
-   * metadata. */
-  tiler_sink_pad = gst_element_get_static_pad (tiler, "sink");
-  gst_pad_add_probe (tiler_sink_pad, GST_PAD_PROBE_TYPE_BUFFER,
-      pgie_pad_buffer_probe, NULL, NULL);
+    gst_pad_add_probe (tiler_src_pad, GST_PAD_PROBE_TYPE_BUFFER,
+        tiler_src_pad_buffer_probe, NULL, NULL);
 
   /* Set the pipeline to "playing" state */
-  g_print ("Now playing: %s\n", argv[1]);
+  g_print ("Now playing:");
+  for (i = 0; i < num_sources; i++) {
+    g_print (" %s,", argv[i + 1]);
+  }
+  g_print ("\n");
   gst_element_set_state (pipeline, GST_STATE_PLAYING);
 
-  /* Iterate */
+  /* Wait till pipeline encounters an error or EOS */
   g_print ("Running...\n");
   g_main_loop_run (loop);
 
