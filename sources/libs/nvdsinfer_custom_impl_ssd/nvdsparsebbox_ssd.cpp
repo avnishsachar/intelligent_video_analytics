@@ -49,7 +49,7 @@ bool NvDsInferParseCustomSSD (std::vector<NvDsInferLayerInfo> const &outputLayer
   static int nms1LayerIndex = -1;
   static bool classMismatchWarn = false;
   int numClassesToParse;
-  static const int NUM_CLASSES_SSD = 91;
+  static const int NUM_CLASSES_SSD = 2;
 
   if (nmsLayerIndex == -1) {
     for (unsigned int i = 0; i < outputLayersInfo.size(); i++) {
