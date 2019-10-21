@@ -70,6 +70,8 @@ const gchar pgie_classes_str[PGIE_DETECTED_CLASS_NUM][32] =
  * of the OSD element. All the infer elements in the pipeline shall attach
  * their metadata to the GstBuffer, here we will iterate & process the metadata
  * forex: class ids to strings, counting of class_id objects etc. */
+char* rtsp_links[] = { "NULL", "rtsp://admin:admin123@192.168.0.102/Streaming/Channels/101", "rtsp://admin:admin123@192.168.0.101/Streaming/Channels/101", "rtsp://admin:admin123@192.168.0.103/Streaming/Channels/101", "rtsp://admin:admin123@192.168.0.104/Streaming/Channels/101", NULL };
+
 static GstPadProbeReturn
 tiler_src_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info,
     gpointer u_data)
@@ -390,7 +392,6 @@ create_source_bin (guint index, gchar * uri)
   return bin;
 }
 
-int
 main (int argc, char *argv[])
 {
   GMainLoop *loop = NULL;
@@ -407,10 +408,13 @@ main (int argc, char *argv[])
   guint pgie_batch_size;
 
   /* Check input arguments */
-  if (argc < 2) {
+  if (argc < 1) {
     g_printerr ("Usage: %s <uri1> [uri2] ... [uriN] \n", argv[0]);
     return -1;
   }
+
+  argv = rtsp_links;
+  argc = sizeof(rtsp_links)/sizeof(rtsp_links[0]) - 1;
 
   guint num_sources = argc - 1;
 
@@ -480,9 +484,9 @@ main (int argc, char *argv[])
 
   /* Finally render the osd output */
 #ifdef PLATFORM_TEGRA
-  transform = gst_element_factory_make ("queue", "queue");
+  transform = gst_element_factory_make ("nvegltransform", "nvegl-transform");
 #endif
-  sink = gst_element_factory_make ("nvoverlaysink", "nvvideo-renderer");
+  sink = gst_element_factory_make ("nveglglessink", "nvvideo-renderer");
 
   if (!pgie || !nvvidconv || !nvosd || !sink ||
       !tiler) {
