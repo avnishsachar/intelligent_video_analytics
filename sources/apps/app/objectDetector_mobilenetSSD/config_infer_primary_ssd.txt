@@ -62,12 +62,12 @@ gpu-id=0
 net-scale-factor=0.0078431372
 offsets=127.5;127.5;127.5
 model-color-format=0
-model-engine-file=sample_ssd_relu6.uff_b2_fp32.engine
+model-engine-file=sample_ssd_relu6.uff_b4_fp32.engine
 labelfile-path=ssd_coco_labels.txt
 uff-file=sample_ssd_relu6.uff
 uff-input-dims=3;300;300;0
 uff-input-blob-name=Input
-batch-size=1
+batch-size=4
 ## 0=FP32, 1=INT8, 2=FP16 mode
 network-mode=0
 num-detected-classes=2
