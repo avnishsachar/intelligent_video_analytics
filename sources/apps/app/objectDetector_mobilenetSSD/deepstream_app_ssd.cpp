@@ -60,9 +60,13 @@
 /* NVIDIA Decoder source pad memory feature. This feature signifies that source
  * pads having this capability will push GstBuffers containing cuda buffers. */
 #define GST_CAPS_FEATURES_NVMM "memory:NVMM"
-gint frame_number = 0;
+guint frame_number = 0;
+
 const gchar pgie_classes_str[PGIE_DETECTED_CLASS_NUM][32] =
     { "unlabeled", "person" };
+
+char* rtsp_links[] = { "NULL", "rtsp://admin:admin123@192.168.0.102", "rtsp://admin:admin123@192.168.0.103/Streaming/Channels/101", "rtsp://admin:admin123@192.168.0.101/Streaming/Channels/101", NULL };
+
 
 // #define FPS_PRINT_INTERVAL 300
 
@@ -81,6 +85,7 @@ tiler_src_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info,
   NvDsMetaList *l_frame = NULL;
   NvDsMetaList *l_obj = NULL;
   NvDsDisplayMeta *display_meta = NULL;
+  gchar *msg = NULL;
 
   NvDsBatchMeta *batch_meta = gst_buffer_get_nvds_batch_meta (buf);
 
@@ -125,10 +130,13 @@ tiler_src_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info,
     nvds_add_display_meta_to_frame (frame_meta, display_meta);
   }
 
-
   // g_print ("Frame Number = %d"
   //     "Person Count = %d\n",
   //     frame_number, person_count);
+  g_object_get (G_OBJECT (u_data), "last-message", &msg, NULL);
+  if (msg != NULL) {
+    g_print ("Fps info: %s\n", msg);
+  }
   frame_number++;
   return GST_PAD_PROBE_OK;
 }
@@ -395,7 +403,7 @@ main (int argc, char *argv[])
 {
   GMainLoop *loop = NULL;
   GstElement *pipeline = NULL, *source = NULL, *h264parser = NULL, *queue =
-      NULL, *decoder = NULL, *streammux = NULL, *sink = NULL, *pgie =
+      NULL, *decoder = NULL, *streammux = NULL, *nvsink = NULL, *sink = NULL, *pgie =
       NULL, *nvvidconv = NULL, *nvosd = NULL, *tiler = NULL;
 #ifdef PLATFORM_TEGRA
   GstElement *transform = NULL;
@@ -405,13 +413,17 @@ main (int argc, char *argv[])
   GstPad *osd_sink_pad = NULL, *tiler_src_pad = NULL;
   guint i;
   guint pgie_batch_size;
+  guint tiler_rows;
+  guint tiler_columns;
 
   /* Check input arguments */
-  if (argc < 2) {
-    g_printerr ("Usage: %s <uri1> [uri2] ... [uriN] \n", argv[0]);
+  if (argc < 1) {
+    g_printerr ("Usage: %s\n", argv[0]);
     return -1;
   }
 
+  argv = rtsp_links;
+  argc = sizeof(rtsp_links)/sizeof(rtsp_links[0]) - 1;
   guint num_sources = argc - 1;
 
   /* Standard GStreamer initialization */
@@ -482,7 +494,9 @@ main (int argc, char *argv[])
 #ifdef PLATFORM_TEGRA
   transform = gst_element_factory_make ("queue", "queue");
 #endif
-  sink = gst_element_factory_make ("nvoverlaysink", "nvvideo-renderer");
+  nvsink = gst_element_factory_make ("nvoverlaysink", "nvvideo-renderer");
+  // nvsink = gst_element_factory_make ("fakesink", "nvvideo-renderer");
+  sink = gst_element_factory_make ("fpsdisplaysink", "fps-display");
 
   if (!pgie || !nvvidconv || !nvosd || !sink ||
       !tiler) {
@@ -497,7 +511,7 @@ main (int argc, char *argv[])
 #endif
 
   g_object_set (G_OBJECT (streammux), "width", MUXER_OUTPUT_WIDTH, "height",
-      MUXER_OUTPUT_HEIGHT, "batch-size", num_sources,
+      MUXER_OUTPUT_HEIGHT, "batch-size", num_sources, "live-source", TRUE,
       "batched-push-timeout", MUXER_BATCH_TIMEOUT_USEC, NULL);
 
   /* Set all the necessary properties of the nvinfer element,
@@ -516,12 +530,19 @@ main (int argc, char *argv[])
     g_object_set (G_OBJECT (pgie), "batch-size", num_sources, NULL);
   }
 
-  guint rows = sqrt (num_sources);
-  g_object_set (G_OBJECT (tiler), "rows", rows, "columns",
-      (guint) ceil (1.0 * num_sources / rows), "width", 1920, "height", 1080,
-      NULL);
+  if (num_sources %2 == 0) {
+    guint tiler_rows = sqrt (num_sources);
+  }
+  else {
+    tiler_rows = sqrt (num_sources) + 1.0;
+  }
+  tiler_columns = ceil (1.0 * num_sources / tiler_rows);
+  /* we set the tiler properties here */
+  g_object_set (G_OBJECT (tiler), "rows", tiler_rows, "columns", tiler_columns,
+      "width", MUXER_OUTPUT_WIDTH, "height", MUXER_OUTPUT_HEIGHT, NULL);
+
+  g_object_set (G_OBJECT (sink), "text-overlay", FALSE, "video-sink", nvsink, "sync", FALSE, NULL);
       
-  g_object_set (G_OBJECT(sink), "sync", FALSE, NULL);
   /* we add a message handler */
   bus = gst_pipeline_get_bus (GST_PIPELINE (pipeline));
   bus_watch_id = gst_bus_add_watch (bus, bus_call, loop);
@@ -552,7 +573,6 @@ gst_bin_add_many (GST_BIN (pipeline), pgie, tiler, nvvidconv, nvosd, sink,
   }
 #endif
 
-
   /* Lets add probe to get informed of the meta data generated, we add probe to
    * the sink pad of the osd element, since by that time, the buffer would have
    * had got all the metadata. */
@@ -561,8 +581,7 @@ gst_bin_add_many (GST_BIN (pipeline), pgie, tiler, nvvidconv, nvosd, sink,
     g_print ("Unable to get src pad\n");
   else
     gst_pad_add_probe (tiler_src_pad, GST_PAD_PROBE_TYPE_BUFFER,
-        tiler_src_pad_buffer_probe, NULL, NULL);
-
+        tiler_src_pad_buffer_probe, (gpointer)sink, NULL);
   /* Set the pipeline to "playing" state */
   g_print ("Now playing:");
   for (i = 0; i < num_sources; i++) {
