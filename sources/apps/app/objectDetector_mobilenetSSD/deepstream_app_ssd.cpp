@@ -70,26 +70,12 @@ guint frame_number = 0;
 const gchar pgie_classes_str[PGIE_DETECTED_CLASS_NUM][32] =
     { "unlabeled", "person" };
 
-char* rtsp_links[] = { "NULL", "rtsp://admin:admin123@192.168.0.102", "rtsp://admin:admin123@192.168.0.103/Streaming/Channels/101", "rtsp://admin:admin123@192.168.0.101/Streaming/Channels/101", NULL };
+char* rtsp_links[] = { "NULL", "rtsp://admin:admin123@192.168.0.103", "rtsp://admin:admin123@192.168.0.103/Streaming/Channels/101", "rtsp://admin:admin123@192.168.0.101/Streaming/Channels/101", NULL };
 
 // #define FPS_PRINT_INTERVAL 300
 
-void *set_metadata_ptr(void);
 static gpointer copy_user_meta(gpointer data, gpointer user_data);
-static void release_user_meta(gpointer data, gpointer user_data);
-
-void *set_metadata_ptr()
-{
-  int i = 0;
-  gchar *user_metadata = (gchar*)g_malloc0(USER_ARRAY_SIZE);
-
-  g_print("\n**************** Setting user metadata array of 16 on nvinfer src pad\n");
-  for(i = 0; i < USER_ARRAY_SIZE; i++) {
-    user_metadata[i] = rand() % 255;
-    g_print("user_meta_data [%d] = %d\n", i, user_metadata[i]);
-  }
-  return (void *)user_metadata;
-}
+static gpointer release_user_meta(gpointer data, gpointer user_data);
 
 /* copy function set by user. "data" holds a pointer to NvDsUserMeta*/
 static gpointer copy_user_meta(gpointer data, gpointer user_data)
@@ -102,7 +88,7 @@ static gpointer copy_user_meta(gpointer data, gpointer user_data)
 }
 
 /* release function set by user. "data" holds a pointer to NvDsUserMeta*/
-static void release_user_meta(gpointer data, gpointer user_data)
+static gpointer release_user_meta(gpointer data, gpointer user_data)
 {
   NvDsUserMeta *user_meta = (NvDsUserMeta *) data;
   if(user_meta->user_meta_data) {
@@ -131,12 +117,20 @@ osd_sink_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info,
   NvDsUserMeta *user_meta = NULL;
   gchar *user_meta_data = NULL;
   int i = 0;
+  int j = 0;
 
   NvDsBatchMeta *batch_meta = gst_buffer_get_nvds_batch_meta (buf);
   for (l_frame = batch_meta->frame_meta_list; l_frame != NULL;
       l_frame = l_frame->next) {
     display_meta = nvds_acquire_display_meta_from_pool (batch_meta);
     NvDsFrameMeta *frame_meta = (NvDsFrameMeta *) (l_frame->data);
+    // /* Iterate user metadata in frames to search PGIE's tensor metadata */
+    // for (NvDsMetaList * l_user = frame_meta->frame_user_meta_list;
+    //     l_user != NULL; l_user = l_user->next) {
+    //   NvDsUserMeta *user_meta = (NvDsUserMeta *) l_user->data;
+    //   if (user_meta->base_meta.meta_type != NVDSINFER_TENSOR_OUTPUT_META)
+    //     continue;
+
     for (l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
       obj_meta = (NvDsObjectMeta *) (l_obj->data);
       if (obj_meta->class_id == PGIE_CLASS_ID_PERSON) {
@@ -144,6 +138,7 @@ osd_sink_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info,
         num_rects++;
       }
     }
+    NvOSD_LineParams *line_params  = display_meta->line_params;
     for (l_user_meta = frame_meta->frame_user_meta_list; l_user_meta != NULL;
         l_user_meta = l_user_meta->next) {
       user_meta = (NvDsUserMeta *) (l_user_meta->data);
@@ -154,24 +149,23 @@ osd_sink_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info,
         g_print("\n************ Retrieving user_meta_data array of 16 on osd sink pad\n");
         for(i = 0; i < USER_ARRAY_SIZE; i++) {
           g_print("user_meta_data [%d] = %d\n", i, user_meta_data[i]);
+        
         }
         g_print("\n");
+        line_params[0].x1 = user_meta_data[0];
+        line_params[0].y1 = user_meta_data[1];
+        line_params[0].x2 = user_meta_data[2];
+        line_params[0].y2 = user_meta_data[3];
+        line_params[0].line_width = user_meta_data[4];
+        line_params[0].line_color = (NvOSD_ColorParams){user_meta_data[5], user_meta_data[6], user_meta_data[7], user_meta_data[8]};
+        display_meta->num_lines++;
       }
     }
     NvOSD_TextParams *txt_params = &display_meta->text_params[0];
     display_meta->num_labels = 1;
-    NvOSD_LineParams *line_params  = display_meta->line_params;
     int offset = 0;
     source_id = frame_meta->source_id;
-    g_print("Source: %d", source_id);
-    line_params[0].x1 = 400;//for demonstration, user need to se these values
-    line_params[0].y1 = 400;
-    line_params[0].x2 = 800;
-    line_params[0].y2 = 800;
-    line_params[0].line_width = 4;
-    line_params[0].line_color = (NvOSD_ColorParams){1.0, 0.0, 0.0, 1.0};
-    display_meta->num_lines++;
-    g_print("END %d\n", source_id);
+
     txt_params->display_text = (gchar *) g_malloc0 (MAX_DISPLAY_LEN);
     offset =
         snprintf (txt_params->display_text, MAX_DISPLAY_LEN, "Person = %d ",
@@ -247,11 +241,31 @@ pgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info, gpointer u_data)
     /* Acquire NvDsUserMeta user meta from pool */
     user_meta = nvds_acquire_user_meta_from_pool(batch_meta);
     /* Set NvDsUserMeta below */
-    user_meta->user_meta_data = (void *)set_metadata_ptr();
+    // user_meta->user_meta_data = (void *)set_metadata_ptr();
+    // user_meta->base_meta.meta_type = user_meta_type;
+    // user_meta->base_meta.copy_func = (NvDsMetaCopyFunc)copy_user_meta;
+    // user_meta->base_meta.release_func = (NvDsMetaReleaseFunc)release_user_meta;
+
+    // NvDecoderMeta *line_meta = (NvDecoderMeta *)g_malloc0(sizeof(NvDecoderMeta));
+    gchar *line_meta = (gchar*)g_malloc0(USER_ARRAY_SIZE);
+    /* Add dummy metadata */
+    line_meta[0] = 50; //x1
+    line_meta[1] = 40; //y1
+    line_meta[2] = 250; //x2
+    line_meta[3] = 255; //y2
+    line_meta[4] = 4; //width
+    line_meta[5] = 0.0; //red
+    line_meta[6] = 0.0; //green
+    line_meta[7] = 1.0; //blue
+    line_meta[8] = 1.0; //transparency
+    /* Set NvDsUserMeta below */
+    user_meta->user_meta_data = (gpointer *)line_meta;
     user_meta->base_meta.meta_type = user_meta_type;
+    // user_meta->base_meta.copy_func = (NvDsMetaCopyFunc)decoder_gst_to_nvds_meta_transform_func;
+    // user_meta->base_meta.release_func = (NvDsMetaReleaseFunc)nvds_batch_meta_release_func	;   
     user_meta->base_meta.copy_func = (NvDsMetaCopyFunc)copy_user_meta;
     user_meta->base_meta.release_func = (NvDsMetaReleaseFunc)release_user_meta;
-              
+
     /* We want to add NvDsUserMeta to frame level */
     nvds_add_user_meta_to_frame(frame_meta, user_meta); 
 
