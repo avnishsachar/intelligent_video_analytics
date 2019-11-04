@@ -36,8 +36,11 @@
 #include "nvdsinfer_custom_impl.h"
 
 #define PGIE_CONFIG_FILE  "config_infer_primary_ssd.txt"
-
 #define MAX_DISPLAY_LEN 64
+
+#define TRACKER_CONFIG_FILE "config_tracker_ssd.txt"
+#define MAX_TRACKING_ID_LEN 16
+
 
 #define PGIE_CLASS_ID_PERSON 1
 
@@ -395,6 +398,123 @@ pgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info, gpointer u_data)
   return GST_PAD_PROBE_OK;
 }
 
+/* Tracker config parsing */
+#define CHECK_ERROR(error) \
+    if (error) { \
+        g_printerr ("Error while parsing config file: %s\n", error->message); \
+        goto done; \
+    }
+
+#define CONFIG_GROUP_TRACKER "tracker"
+#define CONFIG_GROUP_TRACKER_WIDTH "tracker-width"
+#define CONFIG_GROUP_TRACKER_HEIGHT "tracker-height"
+#define CONFIG_GROUP_TRACKER_LL_CONFIG_FILE "ll-config-file"
+#define CONFIG_GROUP_TRACKER_LL_LIB_FILE "ll-lib-file"
+#define CONFIG_GROUP_TRACKER_ENABLE_BATCH_PROCESS "enable-batch-process"
+
+static gchar *
+get_absolute_file_path (gchar *cfg_file_path, gchar *file_path)
+{
+  gchar abs_cfg_path[PATH_MAX + 1];
+  gchar *abs_file_path;
+  gchar *delim;
+
+  if (file_path && file_path[0] == '/') {
+    return file_path;
+  }
+
+  if (!realpath (cfg_file_path, abs_cfg_path)) {
+    g_free (file_path);
+    return NULL;
+  }
+
+  // Return absolute path of config file if file_path is NULL.
+  if (!file_path) {
+    abs_file_path = g_strdup (abs_cfg_path);
+    return abs_file_path;
+  }
+
+  delim = g_strrstr (abs_cfg_path, "/");
+  *(delim + 1) = '\0';
+
+  abs_file_path = g_strconcat (abs_cfg_path, file_path, NULL);
+  g_free (file_path);
+
+  return abs_file_path;
+}
+
+static gboolean
+set_tracker_properties (GstElement *nvtracker)
+{
+  gboolean ret = FALSE;
+  GError *error = NULL;
+  gchar **keys = NULL;
+  gchar **key = NULL;
+  GKeyFile *key_file = g_key_file_new ();
+
+  if (!g_key_file_load_from_file (key_file, TRACKER_CONFIG_FILE, G_KEY_FILE_NONE,
+          &error)) {
+    g_printerr ("Failed to load config file: %s\n", error->message);
+    return FALSE;
+  }
+
+  keys = g_key_file_get_keys (key_file, CONFIG_GROUP_TRACKER, NULL, &error);
+  CHECK_ERROR (error);
+
+  for (key = keys; *key; key++) {
+    if (!g_strcmp0 (*key, CONFIG_GROUP_TRACKER_WIDTH)) {
+      gint width =
+          g_key_file_get_integer (key_file, CONFIG_GROUP_TRACKER,
+          CONFIG_GROUP_TRACKER_WIDTH, &error);
+      CHECK_ERROR (error);
+      g_object_set (G_OBJECT (nvtracker), "tracker-width", width, NULL);
+    } else if (!g_strcmp0 (*key, CONFIG_GROUP_TRACKER_HEIGHT)) {
+      gint height =
+          g_key_file_get_integer (key_file, CONFIG_GROUP_TRACKER,
+          CONFIG_GROUP_TRACKER_HEIGHT, &error);
+      CHECK_ERROR (error);
+      g_object_set (G_OBJECT (nvtracker), "tracker-height", height, NULL);
+    } else if (!g_strcmp0 (*key, CONFIG_GROUP_TRACKER_LL_CONFIG_FILE)) {
+      char* ll_config_file = get_absolute_file_path (TRACKER_CONFIG_FILE,
+                g_key_file_get_string (key_file,
+                    CONFIG_GROUP_TRACKER,
+                    CONFIG_GROUP_TRACKER_LL_CONFIG_FILE, &error));
+      CHECK_ERROR (error);
+      g_object_set (G_OBJECT (nvtracker), "ll-config-file", ll_config_file, NULL);
+    } else if (!g_strcmp0 (*key, CONFIG_GROUP_TRACKER_LL_LIB_FILE)) {
+      char* ll_lib_file = get_absolute_file_path (TRACKER_CONFIG_FILE,
+                g_key_file_get_string (key_file,
+                    CONFIG_GROUP_TRACKER,
+                    CONFIG_GROUP_TRACKER_LL_LIB_FILE, &error));
+      CHECK_ERROR (error);
+      g_object_set (G_OBJECT (nvtracker), "ll-lib-file", ll_lib_file, NULL);
+    } else if (!g_strcmp0 (*key, CONFIG_GROUP_TRACKER_ENABLE_BATCH_PROCESS)) {
+      gboolean enable_batch_process =
+          g_key_file_get_integer (key_file, CONFIG_GROUP_TRACKER,
+          CONFIG_GROUP_TRACKER_ENABLE_BATCH_PROCESS, &error);
+      CHECK_ERROR (error);
+      g_object_set (G_OBJECT (nvtracker), "enable_batch_process",
+                    enable_batch_process, NULL);
+    } else {
+      g_printerr ("Unknown key '%s' for group [%s]", *key,
+          CONFIG_GROUP_TRACKER);
+    }
+  }
+
+  ret = TRUE;
+done:
+  if (error) {
+    g_error_free (error);
+  }
+  if (keys) {
+    g_strfreev (keys);
+  }
+  if (!ret) {
+    g_printerr ("%s failed", __func__);
+  }
+  return ret;
+}
+
 static gboolean
 bus_call (GstBus * bus, GstMessage * msg, gpointer data)
 {
@@ -531,7 +651,8 @@ main (int argc, char *argv[])
   GMainLoop *loop = NULL;
   GstElement *pipeline = NULL, *source = NULL, *h264parser = NULL, *queue =
       NULL, *decoder = NULL, *streammux = NULL, *nvsink = NULL, *sink = NULL, *pgie =
-      NULL, *nvvidconv = NULL, *nvosd = NULL, *tiler = NULL;
+      NULL, *nvvidconv = NULL, *nvosd = NULL, *tiler = NULL, *nvtracker = NULL;
+  g_print ("With tracker\n");
 #ifdef PLATFORM_TEGRA
   GstElement *transform = NULL;
 #endif
@@ -608,6 +729,9 @@ main (int argc, char *argv[])
    * behaviour of inferencing is set through config file */
   pgie = gst_element_factory_make ("nvinfer", "primary-nvinference-engine");
 
+  /* We need to have a tracker to track the identified objects */
+  nvtracker = gst_element_factory_make ("nvtracker", "tracker");
+  
   /* Use convertor to convert from NV12 to RGBA as required by nvosd */
   tiler = gst_element_factory_make ("nvmultistreamtiler", "nvtiler");
 
@@ -625,7 +749,7 @@ main (int argc, char *argv[])
   // nvsink = gst_element_factory_make ("fakesink", "nvvideo-renderer");
   sink = gst_element_factory_make ("fpsdisplaysink", "fps-display");
 
-  if (!pgie || !nvvidconv || !nvosd || !sink ||
+  if (!pgie || !nvtracker || !nvvidconv || !nvosd || !sink ||
       !tiler) {
     g_printerr ("One element could not be created. Exiting.\n");
     return -1;
@@ -647,8 +771,14 @@ main (int argc, char *argv[])
    * SGIEs buffer to parse tensor output data of models */
   g_object_set (G_OBJECT (pgie), "config-file-path", PGIE_CONFIG_FILE,
       "output-tensor-meta", TRUE, NULL);
-  /* Override the batch-size set in the config file with the number of sources. */
 
+  /* Set necessary properties of the tracker element. */
+  if (!set_tracker_properties(nvtracker)) {
+    g_printerr ("Failed to set tracker properties. Exiting.\n");
+    return -1;
+  }
+
+  /* Override the batch-size set in the config file with the number of sources. */
   g_object_get (G_OBJECT (pgie), "batch-size", &pgie_batch_size, NULL);
   if (pgie_batch_size != num_sources) {
     g_printerr
@@ -679,21 +809,21 @@ main (int argc, char *argv[])
   /* we add all elements into the pipeline */
   /* decoder | pgie1 | sgie1 | sgie2 | sgie3 | etc.. */
 #ifdef PLATFORM_TEGRA
-  gst_bin_add_many (GST_BIN (pipeline), pgie, tiler, nvvidconv, nvosd, transform, sink,
+  gst_bin_add_many (GST_BIN (pipeline), pgie, nvtracker, tiler, nvvidconv, nvosd, transform, sink,
       NULL);
   /* we link the elements together
    * nvstreammux -> nvinfer -> nvtiler -> nvvidconv -> nvosd -> video-renderer */
-  if (!gst_element_link_many (streammux, pgie, tiler, nvvidconv, nvosd, transform, sink,
+  if (!gst_element_link_many (streammux, pgie, nvtracker, tiler, nvvidconv, nvosd, transform, sink,
           NULL)) {
     g_printerr ("Elements could not be linked. Exiting.\n");
     return -1;
   }
 #else
-gst_bin_add_many (GST_BIN (pipeline), pgie, tiler, nvvidconv, nvosd, sink,
+gst_bin_add_many (GST_BIN (pipeline), pgie, nvtracker, tiler, nvvidconv, nvosd, sink,
       NULL);
   /* we link the elements together
    * nvstreammux -> nvinfer -> nvtiler -> nvvidconv -> nvosd -> video-renderer */
-  if (!gst_element_link_many (streammux, pgie, tiler, nvvidconv, nvosd, sink,
+  if (!gst_element_link_many (streammux, pgie, nvtracker, tiler, nvvidconv, nvosd, sink,
           NULL)) {
     g_printerr ("Elements could not be linked. Exiting.\n");
     return -1;
