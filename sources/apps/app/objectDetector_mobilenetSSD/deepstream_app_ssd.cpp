@@ -74,6 +74,16 @@ char* rtsp_links[] = { "NULL", "rtsp://admin:admin123@192.168.0.103", "rtsp://ad
 
 // #define FPS_PRINT_INTERVAL 300
 
+/* Function to find distance between bbox centroid and lines */
+float shortest_distance(float x1, float y1, 
+                       float a, float b,  
+                       float c) 
+{ 
+    float d = (a * x1 + b * y1 + c) /  
+             (sqrt(a * a + b * b)); 
+    return d;
+}
+
 static gpointer copy_user_meta(gpointer data, gpointer user_data);
 static gpointer release_user_meta(gpointer data, gpointer user_data);
 
@@ -146,16 +156,16 @@ osd_sink_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info,
 
       if(user_meta->base_meta.meta_type == NVDS_USER_FRAME_META_EXAMPLE)
       {
-        g_print("\n************ Retrieving user_meta_data array of 16 on osd sink pad\n");
-        for(i = 0; i < USER_ARRAY_SIZE; i++) {
-          g_print("user_meta_data [%d] = %d\n", i, user_meta_data[i]);
+        // g_print("\n************ Retrieving user_meta_data array of 16 on osd sink pad\n");
+        // for(i = 0; i < USER_ARRAY_SIZE; i++) {
+        //   g_print("user_meta_data [%d] = %d\n", i, user_meta_data[i]);
         
-        }
-        g_print("\n");
-        line_params[0].x1 = user_meta_data[0];
-        line_params[0].y1 = user_meta_data[1];
-        line_params[0].x2 = user_meta_data[2];
-        line_params[0].y2 = user_meta_data[3];
+        // }
+        // g_print("\n");
+        line_params[0].x1 = -160;
+        line_params[0].y1 = 1076;
+        line_params[0].x2 = 100;
+        line_params[0].y2 = 100;
         line_params[0].line_width = user_meta_data[4];
         line_params[0].line_color = (NvOSD_ColorParams){user_meta_data[5], user_meta_data[6], user_meta_data[7], user_meta_data[8]};
         display_meta->num_lines++;
@@ -168,7 +178,7 @@ osd_sink_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info,
 
     txt_params->display_text = (gchar *) g_malloc0 (MAX_DISPLAY_LEN);
     offset =
-        snprintf (txt_params->display_text, MAX_DISPLAY_LEN, "Person = %d ",
+        snprintf (txt_params->display_text, MAX_DISPLAY_LEN, "Persons: %d",
         person_count);
 
     /* Now set the offsets where the string should appear */
@@ -194,10 +204,10 @@ osd_sink_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info,
   // g_print ("Frame Number = %d"
   //     "Person Count = %d\n",
   //     frame_number, person_count);
-  g_object_get (G_OBJECT (u_data), "last-message", &msg, NULL);
-  if (msg != NULL) {
-    g_print ("Fps info: %s\n", msg);
-  }
+  // g_object_get (G_OBJECT (u_data), "last-message", &msg, NULL);
+  // if (msg != NULL) {
+  //   g_print ("Fps info: %s\n", msg);
+  // }
   frame_number++;
   return GST_PAD_PROBE_OK;
 }
@@ -228,6 +238,8 @@ pgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info, gpointer u_data)
   0.2, 0.2}};
   static float groupThreshold = 1;
   static float groupEps = 0.2;
+  guint bbox_x, bbox_y;
+  gfloat bbox_d;
   NvDsUserMeta *user_meta = NULL;
   NvDsMetaType user_meta_type = NVDS_USER_FRAME_META_EXAMPLE;
   NvDsBatchMeta *batch_meta =
@@ -249,20 +261,19 @@ pgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info, gpointer u_data)
     // NvDecoderMeta *line_meta = (NvDecoderMeta *)g_malloc0(sizeof(NvDecoderMeta));
     gchar *line_meta = (gchar*)g_malloc0(USER_ARRAY_SIZE);
     /* Add dummy metadata */
-    line_meta[0] = 50; //x1
-    line_meta[1] = 40; //y1
-    line_meta[2] = 250; //x2
-    line_meta[3] = 255; //y2
+    line_meta[0] = 50 * MUXER_OUTPUT_WIDTH / PGIE_NET_WIDTH; //x1
+    line_meta[1] = 40 * MUXER_OUTPUT_HEIGHT / PGIE_NET_HEIGHT; //y1
+    line_meta[2] = 250 * MUXER_OUTPUT_WIDTH / PGIE_NET_WIDTH; //x2
+    line_meta[3] = 255 * MUXER_OUTPUT_HEIGHT / PGIE_NET_HEIGHT; //y2
     line_meta[4] = 4; //width
     line_meta[5] = 0.0; //red
     line_meta[6] = 0.0; //green
     line_meta[7] = 1.0; //blue
     line_meta[8] = 1.0; //transparency
+
     /* Set NvDsUserMeta below */
     user_meta->user_meta_data = (gpointer *)line_meta;
     user_meta->base_meta.meta_type = user_meta_type;
-    // user_meta->base_meta.copy_func = (NvDsMetaCopyFunc)decoder_gst_to_nvds_meta_transform_func;
-    // user_meta->base_meta.release_func = (NvDsMetaReleaseFunc)nvds_batch_meta_release_func	;   
     user_meta->base_meta.copy_func = (NvDsMetaCopyFunc)copy_user_meta;
     user_meta->base_meta.release_func = (NvDsMetaReleaseFunc)release_user_meta;
 
@@ -275,7 +286,7 @@ pgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info, gpointer u_data)
       NvDsUserMeta *user_meta = (NvDsUserMeta *) l_user->data;
       if (user_meta->base_meta.meta_type != NVDSINFER_TENSOR_OUTPUT_META)
         continue;
-            
+
       /* convert to tensor metadata */
       NvDsInferTensorMeta *meta =
           (NvDsInferTensorMeta *) user_meta->user_meta_data;
@@ -332,6 +343,26 @@ pgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info, gpointer u_data)
           rect_params.height =
               rect.height * MUXER_OUTPUT_HEIGHT / PGIE_NET_HEIGHT;
 
+          /* Extracting bbox centroid coordinates */
+          bbox_x = rect_params.left - (rect_params.width/2);
+          bbox_y = rect_params.top - rect_params.height;
+          // g_print("X coordinate: %f Y coordinate: %f\n", bbox_x, bbox_y);
+          // g_print("left:%d, top:%d, width:%d, height:%d\n\n",rect_params.left, rect_params.top, rect_params.width, rect_params.height);
+          
+          /*Critical Line */
+          line_meta[0] = 50 * MUXER_OUTPUT_WIDTH / PGIE_NET_WIDTH; //x1
+          line_meta[1] = 40 * MUXER_OUTPUT_HEIGHT / PGIE_NET_HEIGHT; //y1
+          line_meta[2] = 250 * MUXER_OUTPUT_WIDTH / PGIE_NET_WIDTH; //x2
+          line_meta[3] = 255 * MUXER_OUTPUT_HEIGHT / PGIE_NET_HEIGHT; //y2
+          
+          gfloat x = 3; 
+          gfloat y = 4; 
+          gfloat A = 4; 
+          gfloat B = 3; 
+          gfloat C = 4;
+          bbox_d = shortest_distance(bbox_x, bbox_y, A, B, C); 
+          // g_print("DISTANCE d: %f\n", bbox_d);
+
           /* Border of width 3. */
           rect_params.border_width = 3;
           rect_params.has_bg_color = 0;
@@ -340,13 +371,16 @@ pgie_pad_buffer_probe (GstPad * pad, GstPadProbeInfo * info, gpointer u_data)
 
           /* display_text requires heap allocated memory. */
           text_params.display_text = g_strdup (pgie_classes_str[c]);
+
           /* Display text above the left top corner of the object. */
           text_params.x_offset = rect_params.left;
           text_params.y_offset = rect_params.top - 10;
+          
           /* Set black background for the text. */
           text_params.set_bg_clr = 1;
           text_params.text_bg_clr = (NvOSD_ColorParams) {
           0, 0, 0, 1};
+          
           /* Font face, size and color. */
           text_params.font_params.font_name = (gchar *) "Serif";
           text_params.font_params.font_size = 11;
