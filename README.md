@@ -1,3 +1,3 @@
 # IVA
-Deepstream SDK based IVA Application
+Deepstream SDK based Computer Vision Application for Intelligent Video Analytics
 
