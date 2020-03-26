@@ -1,5 +1,5 @@
 ################################################################################
-# Copyright (c) 2018-2019, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2019, NVIDIA CORPORATION. All rights reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
 # copy of this software and associated documentation files (the "Software"),
@@ -20,39 +20,47 @@
 # DEALINGS IN THE SOFTWARE.
 ################################################################################
 
-APP:= deepstream-app
+CUDA_VER?=
+ifeq ($(CUDA_VER),)
+  $(error "CUDA_VER is not set")
+endif
 
+APP:= deepstream-mobilenet_ssd-app
+CC = g++
 TARGET_DEVICE = $(shell gcc -dumpmachine | cut -f1 -d -)
 
 NVDS_VERSION:=4.0
 
 LIB_INSTALL_DIR?=/opt/nvidia/deepstream/deepstream-$(NVDS_VERSION)/lib/
 
-ifeq ($(TARGET_DEVICE),aarch64)
-  CFLAGS:= -DPLATFORM_TEGRA
-endif
-
-SRCS:= $(wildcard *.c)
-SRCS+= $(wildcard ../../apps-common/src/*.c)
-
+SRCS:= $(wildcard *.cpp)
 INCS:= $(wildcard *.h)
 
-PKGS:= gstreamer-1.0 gstreamer-video-1.0 x11
+PKGS:= gstreamer-1.0 opencv
 
-OBJS:= $(SRCS:.c=.o)
-
-CFLAGS+= -I../../apps-common/includes -I../../../includes -DDS_VERSION_MINOR=0 -DDS_VERSION_MAJOR=4
-
-LIBS+= -L$(LIB_INSTALL_DIR) -lnvdsgst_meta -lnvds_meta -lnvdsgst_helper -lnvds_utils -lm \
-       -lgstrtspserver-1.0 -lgstrtp-1.0 -Wl,-rpath,$(LIB_INSTALL_DIR)
+CFLAGS:= -fPIC -std=c++11    \
+         -I ../../../includes \
+         -I /usr/local/cuda-$(CUDA_VER)/include
 
 CFLAGS+= `pkg-config --cflags $(PKGS)`
+LIBS:= `pkg-config --libs $(PKGS)`
 
-LIBS+= `pkg-config --libs $(PKGS)`
+LIBS+= -L$(LIB_INSTALL_DIR) -lnvdsgst_meta -lnvds_meta -lnvds_inferutils -lm \
+       -L/usr/local/cuda-$(CUDA_VER)/lib64/ -lcudart     \
+       -Wl,-rpath,$(LIB_INSTALL_DIR)
+
+ifeq ($(TARGET_DEVICE),aarch64)
+  CFLAGS+= -DPLATFORM_TEGRA
+  SRCS+=../../../libs/nvdsinfer_custom_impl_ssd/nvdsparsebbox_ssd.cpp
+else
+  LIBS+= -L$(LIB_INSTALL_DIR) -lnvds_infercustomparser
+endif
+
+OBJS:= $(SRCS:.cpp=.o)
 
 all: $(APP)
 
-%.o: %.c $(INCS) Makefile
+%.o: %.cpp $(INCS) Makefile
 	$(CC) -c -o $@ $(CFLAGS) $<
 
 $(APP): $(OBJS) Makefile
